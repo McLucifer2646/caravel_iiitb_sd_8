@@ -68,98 +68,96 @@ module user_proj_example #(
     // IRQ
     output [2:0] irq
 );
-    wire clk;
-    wire rst;
+    wire clock;
+    wire reset;
 
     wire [`MPRJ_IO_PADS-1:0] io_in;
     wire [`MPRJ_IO_PADS-1:0] io_out;
     wire [`MPRJ_IO_PADS-1:0] io_oeb;
 
-    wire [31:0] rdata; 
-    wire [31:0] wdata;
-    wire [BITS-1:0] count;
+    wire sequence_in;
+    wire detector_out;
+    wire [28:0]in1;
+    wire [2:0]in2;
 
-    wire valid;
-    wire [3:0] wstrb;
-    wire [31:0] la_write;
+    assign io_oeb = 0;
+    assign {in1, clock, sequence_in, in2, reset} = io_in[`MPRJ_IO_PADS-2:0];
+    assign io_out[37] = detector_out;
 
-    // WB MI A
-    assign valid = wbs_cyc_i && wbs_stb_i; 
-    assign wstrb = wbs_sel_i & {4{wbs_we_i}};
-    assign wbs_dat_o = rdata;
-    assign wdata = wbs_dat_i;
-
-    // IO
-    assign io_out = count;
-    assign io_oeb = {(`MPRJ_IO_PADS-1){rst}};
-
-    // IRQ
-    assign irq = 3'b000;	// Unused
-
-    // LA
-    assign la_data_out = {{(127-BITS){1'b0}}, count};
-    // Assuming LA probes [63:32] are for controlling the count register  
-    assign la_write = ~la_oenb[63:32] & ~{BITS{valid}};
-    // Assuming LA probes [65:64] are for controlling the count clk & reset  
-    assign clk = (~la_oenb[64]) ? la_data_in[64]: wb_clk_i;
-    assign rst = (~la_oenb[65]) ? la_data_in[65]: wb_rst_i;
-
-    counter #(
-        .BITS(BITS)
-    ) counter(
-        .clk(clk),
-        .reset(rst),
-        .ready(wbs_ack_o),
-        .valid(valid),
-        .rdata(rdata),
-        .wdata(wbs_dat_i),
-        .wstrb(wstrb),
-        .la_write(la_write),
-        .la_input(la_data_in[63:32]),
-        .count(count)
-    );
-
+    Sequence_Detector_MOORE_Verilog uut(sequence_in,clock,reset,detector_out);
 endmodule
 
-module counter #(
-    parameter BITS = 32
-)(
-    input clk,
-    input reset,
-    input valid,
-    input [3:0] wstrb,
-    input [BITS-1:0] wdata,
-    input [BITS-1:0] la_write,
-    input [BITS-1:0] la_input,
-    output ready,
-    output [BITS-1:0] rdata,
-    output [BITS-1:0] count
-);
-    reg ready;
-    reg [BITS-1:0] count;
-    reg [BITS-1:0] rdata;
+module Sequence_Detector_MOORE_Verilog(sequence_in,clock,reset,detector_out);
+input clock; 			// clock signal
+input reset; 			// reset input
+input sequence_in; 		// binary input
+output reg detector_out; 		// output of the sequence detector
+parameter
+	Zero = 3'b000, 						// "Zero" State
+  	One = 3'b001, 						// "One" State
+  	OneOne = 3'b011, 					// "OneOne" State
+  	OneOneOne = 3'b010, 				// "OneOneOne" State
+  	OneOneOneOne = 3'b110;				// "OneOneOneOne" State
+reg [2:0] current_state, next_state; 	// current state and next state
+// sequential memory of the Moore FSM
+always @(posedge clock, posedge reset)
+begin
+ 	if(reset==1) 
+ 		current_state <= Zero;			// when reset=1, reset the state of the FSM to "Zero" State
+ 	else
+ 		current_state <= next_state; 	// otherwise, next state
+end
 
-    always @(posedge clk) begin
-        if (reset) begin
-            count <= 0;
-            ready <= 0;
-        end else begin
-            ready <= 1'b0;
-            if (~|la_write) begin
-                count <= count + 1;
-            end
-            if (valid && !ready) begin
-                ready <= 1'b1;
-                rdata <= count;
-                if (wstrb[0]) count[7:0]   <= wdata[7:0];
-                if (wstrb[1]) count[15:8]  <= wdata[15:8];
-                if (wstrb[2]) count[23:16] <= wdata[23:16];
-                if (wstrb[3]) count[31:24] <= wdata[31:24];
-            end else if (|la_write) begin
-                count <= la_write & la_input;
-            end
-        end
-    end
-
+// combinational logic of the Moore FSM
+// to determine next state 
+always @(current_state,sequence_in)
+begin
+ 	case(current_state) 
+ 	Zero:begin
+ 	 	if(sequence_in == 1)
+ 	 	 	next_state = One;
+ 	 	else
+ 	 	 	next_state = Zero;
+ 	end
+ 	One:begin
+ 	 	if(sequence_in == 1)
+ 	 	 	next_state = OneOne;
+ 	 	else
+ 	 	 	next_state = Zero;
+ 	end
+ 	OneOne:begin
+ 	 	if(sequence_in == 1)
+ 	 	 	next_state = OneOneOne;
+ 	 	else
+ 	 	 	next_state = Zero;
+ 	end 
+ 	OneOneOne:begin
+ 	 	if(sequence_in == 1)
+ 	 	 	next_state = OneOneOneOne;
+ 	 	else
+ 	 	 	next_state = Zero;
+ 	end
+ 	OneOneOneOne:begin
+ 	 	if(sequence_in == 0)
+ 	 	 	next_state = Zero;
+ 	 	else
+ 	 	 	next_state = OneOneOneOne;
+ 	end
+ 	default:next_state = Zero;
+ 	endcase
+end
+// combinational logic to determine the output
+// of the Moore FSM, output only depends on current state
+always @(current_state)
+begin 
+ case(current_state) 
+ Zero:   detector_out = 0;
+ One:   detector_out = 0;
+ OneOne:  detector_out = 0;
+ OneOneOne:  detector_out = 0;
+ OneOneOneOne:  detector_out = 1;
+ default:  detector_out = 0;
+ endcase
+end 
 endmodule
 `default_nettype wire
